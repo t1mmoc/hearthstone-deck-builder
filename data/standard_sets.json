@@ -1,0 +1,14 @@
+{
+  "year": "甲虫年 (Year of the Scarab)",
+  "as_of": "2026-08-02",
+  "rotation_note": "2026 年 3 月轮换：2023/2024 年系列已退环境。当前标准 = 核心系列 + 2025 年三张扩展 + 2026 年已发布扩展。",
+  "sets": [
+    "CORE",
+    "EMERALD_DREAM",
+    "THE_LOST_CITY",
+    "TIME_TRAVEL",
+    "CATACLYSM",
+    "ESCAPEFROM_VIOLET_HOLD"
+  ],
+  "update_hint": "每年 3 月轮换或新扩展上线后必须更新本文件（这是 AI 判断卡牌是否合法的唯一依据）。WONDERS 系列在 2026-08-02 尚未确认上线为标准系列，故未列入；若已上线请加入。"
+}

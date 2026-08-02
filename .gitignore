@@ -1,0 +1,29 @@
+# 本地工作记录
+.workbuddy/
+
+# .NET DLL（许可限制，不提交）
+script/lib/*.dll
+
+# 运行时生成的 CSV
+*.csv
+
+# 运行时缓存
+script/cards_cache_*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
