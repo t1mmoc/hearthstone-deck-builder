@@ -44,6 +44,9 @@ python script/collection_report.py --csv data/collection_mirror.csv
 
 # 查看某职业的标准环境可用卡池（AI 组卡时从这里挑选）
 python script/collection_report.py --csv data/collection_mirror.csv --class 死亡骑士
+
+# 附带每张卡的完整描述（评估单卡效果时加 --with-text）
+python script/collection_report.py --csv data/collection_mirror.csv --class 死亡骑士 --with-text
 ```
 
 ### 步骤 3：组卡（AI 判断）

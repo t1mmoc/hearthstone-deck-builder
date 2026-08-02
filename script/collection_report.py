@@ -14,12 +14,16 @@
 
   # 包含已退环境（狂野）的卡牌
   python script/collection_report.py --csv data/collection_mirror.csv --class 法师 --all
+
+  # 卡池清单附带卡牌描述（AI 评估单卡用）
+  python script/collection_report.py --csv data/collection_mirror.csv --class 死亡骑士 --with-text
 """
 
 import argparse
 import csv
 import json
 import os
+import re
 import sys
 from collections import Counter
 
@@ -87,6 +91,25 @@ def format_class_key(key):
     return CLASS_ZH.get(key, key)
 
 
+def clean_card_text(text):
+    """
+    清理卡牌文本为可读单行：
+    - 去掉（还剩X点/已经就绪）这类动态提示与 @ 分段（重复的变体文本）
+    - 去掉 HTML 标签与 {0} 占位符
+    - 删掉 $ / # 显示标记（后面的数字保留，如 "$25点伤害" → "25点伤害"）
+    """
+    if not text:
+        return ""
+    text = re.sub(r"<i>（[^<]*）</i>", "", text)
+    text = text.split("@", 1)[0]
+    text = re.sub(r"<[^>]*>", "", text)
+    text = re.sub(r"\{[^}]*\}", "", text)
+    text = re.sub(r"\$[ad]", "", text)
+    text = text.replace("$", "").replace("#", "")
+    text = text.replace("\r", " ").replace("\n", " ")
+    return " ".join(text.split())
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="收藏分析报告：统计各职业/系列拥有量，列出标准环境可用卡池",
@@ -95,6 +118,7 @@ def main():
     parser.add_argument("--csv", default=None, help="收藏 CSV 路径 (默认: data/collection_mirror.csv 或 ./collection_mirror.csv)")
     parser.add_argument("--class", dest="cls", help="只看某职业的可用卡池（职业中文名或英文代码）")
     parser.add_argument("--all", action="store_true", help="卡池清单包含已退环境（狂野）卡牌")
+    parser.add_argument("--with-text", action="store_true", help="卡池清单附带卡牌描述（从完整缓存按需读取）")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出报告")
     args = parser.parse_args()
 
@@ -182,6 +206,11 @@ def main():
         ]
         pool.sort(key=lambda r: (int(r.get("法力值", 0) or 0), r.get("名称", "")))
         print(f"===== {CLASS_ZH.get(cls_en, cls_en)} 可用卡池（{'全部' if args.all else '仅标准环境'}，共 {len(pool)} 张）=====")
+        text_by_id = {}
+        if args.with_text:
+            for c in carddata.load_cache("zhCN"):
+                if c.get("id"):
+                    text_by_id[c["id"]] = c
         ids_line = []
         for r in pool:
             type_zh = r.get("类型", "")
@@ -194,6 +223,12 @@ def main():
             rune_parts = [f"{RUNE_ZH[k]}×{v}" for k, v in sorted(rune.items()) if v]
             rune_str = (" 符文 " + " ".join(rune_parts)) if rune_parts else ""
             print(f"  [{r.get('卡牌ID')}] {r.get('名称')} ({r.get('法力值')}费) {r.get('稀有度')} x{owned} {r.get('卡组')}{rune_str}{mark}{extra}")
+            if args.with_text:
+                cc = text_by_id.get(r.get("卡牌ID"))
+                if cc:
+                    desc = clean_card_text(cc.get("text"))
+                    if desc:
+                        print(f"      {desc}")
             ids_line.append(f"{r.get('卡牌ID')}:{owned}")
         print()
         print("上述卡牌 ID 与拥有数（供组卡时引用）:")

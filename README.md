@@ -17,6 +17,7 @@ python script/export_collection_mirror.py --output data/collection_mirror.csv
 
 # 2. 分析收藏，看看各职业有什么标准环境卡牌
 python script/collection_report.py --csv data/collection_mirror.csv
+python script/collection_report.py --csv data/collection_mirror.csv --class 死亡骑士 --with-text
 
 # 3. 组好 30 张后生成卡组代码（卡牌可用 ID 或 中英文卡名）
 python script/deck_builder.py --hero PALADIN \
