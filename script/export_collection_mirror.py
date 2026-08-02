@@ -31,6 +31,19 @@ import sys
 import glob
 
 # ============================================================
+# 强制 UTF-8 输出
+# ============================================================
+# 脚本会打印 ✓ 等 UTF-8 字符，中文 Windows 控制台默认 GBK 编码无法
+# 编码这些字符，直接 print 会抛 UnicodeEncodeError。这里在启动时把
+# 标准输出/错误固定为 UTF-8，避免依赖终端代码页。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+# ============================================================
 # 常量与映射表
 # ============================================================
 
