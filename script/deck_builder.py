@@ -11,16 +11,22 @@
   从 JSON 文件读取卡组（支持 {"id": ...} 或 {"name": ...}）：
     python script/deck_builder.py --hero PALADIN --cards-file deck.json --csv data/collection_mirror.csv
 
+  带 sideboard（备牌/子卡）的卡组（如 E.T.C. / 奇利亚斯豪华版）：
+    python script/deck_builder.py --hero PALADIN --cards "...30张..." \
+        --sideboard "卡A:1,卡B:1,卡C:1" --csv data/collection_mirror.csv
+
   解码已有的卡组代码（例如从网页复制的 base64 代码）：
     python script/deck_builder.py --decode "AAECAZ8F..." --csv data/collection_mirror.csv
 
 硬性规则（任一不满足即拒绝生成）：
-  - 卡组必须恰好 30 张（不足或超出，炉石无法识别该卡组代码）
+  - 卡组必须恰好 30 张（不足或超出，炉石无法识别该卡组代码）；可用 --ignore-count 显式忽略张数限制
   - 每张传说卡最多 1 张，其余卡最多 2 张
   - 卡牌必须属于英雄职业或中立（多职业卡需包含英雄职业）
   - 标准模式只允许 标准环境系列 + 核心系列（见 data/standard_sets.json）
   - 死亡骑士卡组符文需求合计不得超过 3 个符文位
   - 传入 --csv 时校验收藏：任何一张数量不足即拒绝生成
+  - 带 sideboard 的卡（E.T.C. / 奇利亚斯豪华版）会自动附带备牌/子卡：备牌不计入 30 张，
+    但必须通过 --sideboard 显式给出且数量不超过该卡上限，否则生成的代码会被客户端拒绝
 """
 
 import argparse
@@ -70,6 +76,15 @@ def get_hearthstone_year():
     now = datetime.now()
     year = now.year if now.month >= 3 else now.year - 1
     return HS_YEAR_MAP.get(year, f"{year}年")
+
+
+# 带 sideboard（备牌/子卡）的主卡：卡牌ID → sideboard 卡数（必须恰好等于该值）。
+# 这些卡加入主卡组后，客户端会在卡组里额外附带恰好 N 张备牌（不计入 30 张主卡），
+# 必须显式给出恰好 N 张备牌并编码进卡组代码的 sideboard 段，否则代码无效。
+SIDEBOARD_LIMITS = {
+    "ETC_080": 3,  # 乐队经理精英牛头人酋长 E.T.C., Band Manager（恰好 3 张自选备牌）
+    "TOY_330": 3,  # 奇利亚斯豪华版3000型 Zilliax Deluxe 3000（恰好 3 张：2 功能模块 + 1 外观模块）
+}
 
 
 # 职业名 → 默认英雄卡牌ID
@@ -177,8 +192,12 @@ def parse_cards_file(file_path):
     return cards
 
 
-def resolve_deck_cards(tokens, index, by_id):
-    """把 token 列表（ID 或名称）解析为 [(card, count), ...]；无法解析的返回错误。"""
+def resolve_deck_cards(tokens, index, by_id, allow_token=False):
+    """
+    把 token 列表（ID 或名称）解析为 [(card, count), ...]；无法解析的返回错误。
+
+    allow_token=True 时允许不可收藏的衍生物卡（如奇利亚斯模块），供 sideboard 解析使用。
+    """
     resolved = []
     errors = []
     for token, count in tokens:
@@ -195,7 +214,7 @@ def resolve_deck_cards(tokens, index, by_id):
                 else:
                     errors.append((token, "未找到该卡牌（试试 script/find_card.py 模糊查询）"))
                 continue
-        if not card.get("collectible") and card.get("type") != "HERO":
+        if not allow_token and not card.get("collectible") and card.get("type") != "HERO":
             errors.append((token, "该卡牌不可用于组卡（非收藏卡）"))
             continue
         resolved.append((card, count))
@@ -222,22 +241,29 @@ def load_collection(csv_path):
 # 卡组校验
 # ============================================================
 
-def validate_deck(cards, hero_card, format_name, standard_sets, collection=None):
+def validate_deck(cards, hero_card, format_name, standard_sets, collection=None,
+                  ignore_count=False, sideboard_cards=None):
     """
-    校验卡组。cards: [(card, count)]。返回错误列表（空 = 通过）。
-    硬性规则：恰好 30 张、传说 ≤1 / 其他 ≤2、职业合法、标准环境合法、DK 符文 ≤3、收藏数量足够。
+    校验卡组。cards: [(card, count)] 主卡组；sideboard_cards: [(card, count)] 备牌/子卡（可选）。
+    返回错误列表（空 = 通过）。
+    硬性规则：恰好 30 张（--ignore-count 可忽略）、传说 ≤1 / 其他 ≤2、职业合法、
+    标准环境合法、DK 符文 ≤3、收藏数量足够；sideboard 卡不计入 30 张但校验其上限。
     """
     errors = []
     hero_class = hero_card.get("cardClass")
 
     total = sum(count for _, count in cards)
-    if total != 30:
-        errors.append(f"卡组共有 {total} 张卡牌，必须恰好 30 张（不足或超出都无法被炉石识别，请填满/调整到 30 张）")
+    if not ignore_count and total != 30:
+        errors.append(
+            f"卡组共有 {total} 张卡牌，必须恰好 30 张（不足或超出都无法被炉石识别，"
+            f"请填满/调整到 30 张，或用 --ignore-count 显式忽略张数限制）")
 
     runes = {"blood": 0, "frost": 0, "unholy": 0}
-    for card, count in cards:
+
+    def check_card(card, count, count_runes=True):
         cid = card.get("id")
         name = card.get("name_zh") or card.get("name_en") or cid
+        is_token = not card.get("collectible")
 
         max_copies = 1 if card.get("rarity") == "LEGENDARY" else 2
         if count > max_copies:
@@ -248,18 +274,40 @@ def validate_deck(cards, hero_card, format_name, standard_sets, collection=None)
         if cls != "NEUTRAL" and cls != hero_class and hero_class not in classes:
             errors.append(f"{cid} {name}：属于 {CLASS_ZH.get(cls, cls)}，不能放入 {CLASS_ZH.get(hero_class, hero_class)} 卡组")
 
-        if format_name == "standard" and not carddata.is_standard_set(card.get("set"), standard_sets):
+        # 衍生物（token）随主卡走，不校验退环境与收藏
+        if not is_token and format_name == "standard" and not carddata.is_standard_set(card.get("set"), standard_sets):
             errors.append(f"{cid} {name}：所属系列 {card.get('set')} 已退环境，标准模式不可用")
 
-        if collection is not None:
+        if collection is not None and not is_token:
             owned = collection.get(cid, 0)
             if owned < count:
                 errors.append(f"{cid} {name}：需要 {count} 张，收藏只有 {owned} 张")
 
-        if hero_class == "DEATHKNIGHT":
+        if count_runes and hero_class == "DEATHKNIGHT":
             rc = card.get("runeCost") or {}
             for k in runes:
                 runes[k] = max(runes[k], int(rc.get(k, 0) or 0))
+
+    for card, count in cards:
+        check_card(card, count)
+
+    # sideboard（备牌/子卡）校验：不计入 30 张主卡，但必须有对应主卡且数量恰好等于该卡上限
+    sb_owners = [card for card, _ in cards if card.get("id") in SIDEBOARD_LIMITS]
+    sb_total = sum(count for _, count in (sideboard_cards or []))
+    if len(sb_owners) > 1:
+        errors.append("主卡组含多张可携带备牌的卡，暂不支持一次指定多张备牌主卡；请分别生成")
+    elif sb_owners:
+        owner = sb_owners[0]
+        limit = SIDEBOARD_LIMITS[owner.get("id")]
+        owner_name = owner.get("name_zh") or owner.get("name_en") or owner["id"]
+        if sb_total != limit:
+            errors.append(f"「{owner_name}」需要恰好 {limit} 张备牌/子卡，当前给出 {sb_total} 张（请用 --sideboard 补齐）")
+    elif sideboard_cards:
+        errors.append(
+            f"提供了 {sb_total} 张备牌/子卡，但主卡组中没有可携带备牌的卡"
+            f"（{', '.join(SIDEBOARD_LIMITS)}）")
+    for card, count in (sideboard_cards or []):
+        check_card(card, count, count_runes=False)
 
     if hero_class == "DEATHKNIGHT" and sum(runes.values()) > 3:
         errors.append(f"死亡骑士符文需求 {runes}（血/冰/邪）合计超过 3 个符文位，无法构建")
@@ -298,10 +346,13 @@ def decode_varint(data, pos):
     return result, pos
 
 
-def encode_deck_code(format_num, hero_dbf_id, cards):
+def encode_deck_code(format_num, hero_dbf_id, cards, sideboards=None):
     """
     编码卡组为 base64 字符串。
+    cards: [(dbfId, count)] 主卡组；sideboards: [(dbfId, count, owner_dbfId)] 备牌/子卡。
     1-copy / 2-copy / n-copy 三块内的 dbfId 均升序排列，保证输出稳定且与游戏内导出一致。
+    主卡组块之后：无 sideboard 写 0x00 标志；有 sideboard 写 0x01 + sideboard 三块
+    （每张备牌编码为 dbfId + owner_dbfId，n-copy 块额外带 count）。
     """
     singles = sorted(d for d, count in cards if count == 1)
     doubles = sorted(d for d, count in cards if count == 2)
@@ -326,14 +377,39 @@ def encode_deck_code(format_num, hero_dbf_id, cards):
         data.extend(encode_varint(d))
         data.extend(encode_varint(count))
 
-    data.append(0)  # footer
+    sideboards = sideboards or []
+    if sideboards:
+        data.append(1)  # sideboard 标志：有
+        sb_singles = sorted((d, o) for d, c, o in sideboards if c == 1)
+        sb_doubles = sorted((d, o) for d, c, o in sideboards if c == 2)
+        sb_n = sorted((d, c, o) for d, c, o in sideboards if c not in (1, 2))
+        # sideboard 卡按 (owner_dbfId, dbfId) 升序，与游戏内导出一致
+        sb_singles.sort(key=lambda x: (x[1], x[0]))
+        sb_doubles.sort(key=lambda x: (x[1], x[0]))
+        sb_n.sort(key=lambda x: (x[2], x[0]))
+        data.extend(encode_varint(len(sb_singles)))
+        for d, o in sb_singles:
+            data.extend(encode_varint(d))
+            data.extend(encode_varint(o))
+        data.extend(encode_varint(len(sb_doubles)))
+        for d, o in sb_doubles:
+            data.extend(encode_varint(d))
+            data.extend(encode_varint(o))
+        data.extend(encode_varint(len(sb_n)))
+        for d, c, o in sb_n:
+            data.extend(encode_varint(d))
+            data.extend(encode_varint(c))
+            data.extend(encode_varint(o))
+    else:
+        data.append(0)  # sideboard 标志：无
     return base64.b64encode(bytes(data)).decode("ascii")
 
 
 def decode_deck_code(code):
     """
     解码 base64 卡组代码，返回 dict:
-    {"format": int, "hero_dbf": int, "cards": [(dbfId, count), ...]}
+    {"format": int, "hero_dbf": int, "cards": [(dbfId, count), ...],
+     "sideboards": [(dbfId, count, owner_dbfId), ...]}
     """
     raw = base64.b64decode(code)
     pos = 0
@@ -367,7 +443,28 @@ def decode_deck_code(code):
         c, pos = decode_varint(raw, pos)
         n_copies.append((d, c))
     cards = [(d, 1) for d in singles] + [(d, 2) for d in doubles] + n_copies
-    return {"format": fmt, "hero_dbf": hero_dbf, "cards": cards}
+
+    # sideboard 段（可选，跟在主卡组块之后的 0x01 标志 + 三块备牌）
+    sideboards = []
+    if pos < len(raw) and raw[pos] == 1:
+        pos += 1
+        ns1, pos = decode_varint(raw, pos)
+        for _ in range(ns1):
+            d, pos = decode_varint(raw, pos)
+            o, pos = decode_varint(raw, pos)
+            sideboards.append((d, 1, o))
+        ns2, pos = decode_varint(raw, pos)
+        for _ in range(ns2):
+            d, pos = decode_varint(raw, pos)
+            o, pos = decode_varint(raw, pos)
+            sideboards.append((d, 2, o))
+        ns3, pos = decode_varint(raw, pos)
+        for _ in range(ns3):
+            d, pos = decode_varint(raw, pos)
+            c, pos = decode_varint(raw, pos)
+            o, pos = decode_varint(raw, pos)
+            sideboards.append((d, c, o))
+    return {"format": fmt, "hero_dbf": hero_dbf, "cards": cards, "sideboards": sideboards}
 
 
 def deck_display_name(card, locale="zhCN"):
@@ -391,12 +488,18 @@ def main():
   # 从 JSON 读取卡组
   python script/deck_builder.py --hero PALADIN --cards-file deck.json --csv data/collection_mirror.csv
 
+  # 带 sideboard 备牌的卡组（E.T.C. / 奇利亚斯豪华版）
+  python script/deck_builder.py --hero PALADIN --cards "...30张含 ETC_080..." \\
+      --sideboard "卡A:1,卡B:1,卡C:1" --csv data/collection_mirror.csv
+
   # 解码网上复制的卡组代码
   python script/deck_builder.py --decode "AAECAZ8F..." --csv data/collection_mirror.csv
 
 注意：
-  - 必须恰好 30 张卡牌，否则拒绝生成（炉石无法识别非 30 张卡组代码）
+  - 必须恰好 30 张卡牌，否则拒绝生成（炉石无法识别非 30 张卡组代码）；
+    刻意少于 30 张等场景可用 --ignore-count 显式忽略张数限制
   - 传说卡最多 1 张，其余卡最多 2 张
+  - 带 sideboard 的卡（E.T.C. / 奇利亚斯豪华版）需用 --sideboard 给出备牌，备牌不计入 30 张
   - 卡名查找使用内置 script/cards_index.json（中英文）
 """,
     )
@@ -405,6 +508,8 @@ def main():
     parser.add_argument("--hero", help="英雄：职业名 (如 PALADIN/法师) 或英雄卡牌ID (如 HERO_04)")
     parser.add_argument("--cards", help="卡牌列表，逗号分隔的 `卡牌:数量` 对；卡牌可为 ID 或 中/英文名")
     parser.add_argument("--cards-file", help="从 JSON 文件读取卡组：支持 {\"id\": ...} 或 {\"name\": ...}")
+    parser.add_argument("--sideboard", help="备牌/子卡列表（E.T.C. / 奇利亚斯豪华版等自动附带的 sideboard），逗号分隔的 `卡牌:数量` 对")
+    parser.add_argument("--ignore-count", action="store_true", help="显式忽略卡牌张数限制（默认必须恰好 30 张）")
     parser.add_argument("--csv", help="收藏 CSV 路径；传入则启用收藏校验")
     parser.add_argument("--name", default="自定义卡组", help="卡组名称 (默认: 自定义卡组)")
     parser.add_argument("--locale", choices=["zhCN", "enUS"], default="zhCN", help="输出卡名语言 (默认: zhCN)")
@@ -459,6 +564,22 @@ def main():
                 if have < count:
                     missing_any = True
             print(f"  {count}x ({card.get('cost', '?')}) {name} [{card['id']}] {card.get('set')} {std_mark}{owned}")
+        if decoded.get("sideboards"):
+            print()
+            print("=== 备牌/子卡 (sideboard) ===")
+            for dbf, count, owner_dbf in decoded["sideboards"]:
+                card = by_dbf.get(dbf) or {}
+                owner = by_dbf.get(owner_dbf) or {}
+                name = deck_display_name(card, args.locale) if card else f"dbf={dbf}"
+                owner_name = deck_display_name(owner, args.locale) if owner else f"dbf={owner_dbf}"
+                std_mark = "标准" if (card and carddata.is_standard_set(card.get("set"), standard_sets)) else "狂野"
+                owned = ""
+                if collection is not None and card:
+                    have = collection.get(card["id"], 0)
+                    owned = f"  收藏 {have}/{count}"
+                    if have < count:
+                        missing_any = True
+                print(f"  {count}x {name} [{card.get('id') if card else dbf}] {std_mark}  归属: {owner_name}{owned}")
         if collection is not None and missing_any:
             print("\n⚠ 部分卡牌收藏数量不足（详见上方 收藏 列）", file=sys.stderr)
             sys.exit(1)
@@ -484,6 +605,16 @@ def main():
             print(f"  「{token}」 {msg}", file=sys.stderr)
         sys.exit(1)
 
+    sideboard_cards = []
+    if args.sideboard:
+        sb_tokens = parse_cards_arg(args.sideboard)
+        sideboard_cards, sb_errors = resolve_deck_cards(sb_tokens, index, by_id, allow_token=True)
+        if sb_errors:
+            print("错误: 以下备牌/子卡无法解析:", file=sys.stderr)
+            for token, msg in sb_errors:
+                print(f"  「{token}」 {msg}", file=sys.stderr)
+            sys.exit(1)
+
     hero_input = args.hero.strip()
     hero_key = hero_input.upper()
     if hero_key in DEFAULT_HEROES:
@@ -503,7 +634,8 @@ def main():
         sys.exit(1)
 
     hero_class = hero_card.get("cardClass")
-    errors = validate_deck(deck_cards, hero_card, args.format, standard_sets, collection)
+    errors = validate_deck(deck_cards, hero_card, args.format, standard_sets, collection,
+                           ignore_count=args.ignore_count, sideboard_cards=sideboard_cards)
     if errors:
         print("❌ 卡组校验失败:", file=sys.stderr)
         for e in errors:
@@ -511,6 +643,9 @@ def main():
         print("\n拒绝生成卡组代码。请修正后重试。", file=sys.stderr)
         sys.exit(1)
 
+    total = sum(count for _, count in deck_cards)
+    count_note = f"{total} 张卡牌" if args.ignore_count else "30 张卡牌"
+    sb_note = f" + {sum(c for _, c in sideboard_cards)} 张备牌" if sideboard_cards else ""
     if hero_class == "DEATHKNIGHT":
         runes = {"blood": 0, "frost": 0, "unholy": 0}
         for card, _ in deck_cards:
@@ -519,14 +654,19 @@ def main():
                 runes[k] = max(runes[k], int(rc.get(k, 0) or 0))
         rune_zh = {"blood": "血", "frost": "冰", "unholy": "邪"}
         rune_line = "，".join(f"{rune_zh[k]}×{v}" for k, v in runes.items() if v) or "无符文需求"
-        print(f"✓ 校验通过：30 张卡牌，收藏满足，符文配置 {rune_line}", file=sys.stderr)
+        print(f"✓ 校验通过：{count_note}{sb_note}，收藏满足，符文配置 {rune_line}", file=sys.stderr)
     else:
-        print("✓ 校验通过：30 张卡牌，收藏满足", file=sys.stderr)
+        print(f"✓ 校验通过：{count_note}{sb_note}，收藏满足", file=sys.stderr)
 
     # ---------- 编码 ----------
     hero_dbf = hero_card.get("dbfId")
     dbf_cards = [(card["dbfId"], count) for card, count in deck_cards]
-    deck_code = encode_deck_code(FORMAT_MAP[args.format], hero_dbf, dbf_cards)
+    sideboard_owner_dbf = None
+    for card, _ in deck_cards:
+        if card.get("id") in SIDEBOARD_LIMITS:
+            sideboard_owner_dbf = card["dbfId"]
+    dbf_sideboards = [(card["dbfId"], count, sideboard_owner_dbf) for card, count in sideboard_cards]
+    deck_code = encode_deck_code(FORMAT_MAP[args.format], hero_dbf, dbf_cards, dbf_sideboards)
 
     hs_year = args.year or get_hearthstone_year()
     lines = [f"### {args.name}",
@@ -539,6 +679,14 @@ def main():
     for card, count in info:
         prefix = f"{count}x" if count > 1 else "1x"
         lines.append(f"# {prefix} ({card.get('cost', '?')}) {deck_display_name(card, args.locale)}")
+    if sideboard_cards:
+        lines.append("# ")
+        lines.append("# ---- 备牌/子卡 (sideboard) ----")
+        sb_info = [(card, count) for card, count in sideboard_cards]
+        sb_info.sort(key=lambda x: (x[0].get("cost", 0) or 0, deck_display_name(x[0], args.locale) or ""))
+        for card, count in sb_info:
+            prefix = f"{count}x" if count > 1 else "1x"
+            lines.append(f"# {prefix} ({card.get('cost', '?')}) {deck_display_name(card, args.locale)}")
     lines += ["# ", deck_code, "# ", "# 想要使用这副套牌，请先复制到剪贴板，然后在游戏中点击“新套牌”进行粘贴。"]
     print("\n".join(lines))
 
