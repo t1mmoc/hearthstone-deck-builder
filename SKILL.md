@@ -66,11 +66,12 @@ python script/deck_builder.py --hero DEATHKNIGHT \
 ```
 
 `deck_builder.py` 硬性校验（任一不满足即拒绝生成）：
-- 恰好 30 张卡牌
+- 恰好 30 张卡牌（刻意少于 30 张等场景可用 `--ignore-count` 显式忽略张数限制）
 - 传说 ≤ 1 张、其余 ≤ 2 张
 - 职业合法、标准环境系列合法
 - 死亡骑士符文需求 ≤ 3
 - 收藏数量足够（传 `--csv` 时）
+- 带 sideboard（备牌/子卡）的卡（如 `ETC_080` 乐队经理、`TOY_330` 奇利亚斯豪华版）必须用 `--sideboard` 显式给出备牌：备牌不计入 30 张，但数量必须恰好等于该卡上限（3 张），否则拒绝生成
 
 ### 步骤 5（可选）：解码网上卡组代码
 
@@ -87,6 +88,7 @@ python script/deck_builder.py --decode "AAECAZ8F..." --csv data/collection_mirro
 - 有解场手段和过牌（各 4 张以上为宜）
 - 死亡骑士：符文需求合计 ≤ 3，`collection_report.py --class 死亡骑士` 会直接显示每张卡的符文
 - 全部卡牌均来自标准环境系列（`data/standard_sets.json`）且收藏数量足够
+- 若选了带 sideboard 的卡（乐队经理 `ETC_080` / 奇利亚斯豪华版 `TOY_330`），必须另外用 `--sideboard` 给出恰好 3 张备牌列表（不计入 30 张），否则脚本会报错拒绝生成
 
 ## 运行环境
 
@@ -101,7 +103,7 @@ python script/deck_builder.py --decode "AAECAZ8F..." --csv data/collection_mirro
 | `script/export_collection_mirror.py` | HearthMirror 读游戏内存导出收藏 → CSV（需炉石运行中 + `script/lib/` DLL） |
 | `script/collection_report.py` | 收藏分析：职业/稀有度/系列统计 + 标准环境可用卡池清单 |
 | `script/find_card.py` | 卡名（中/英）或 ID → 卡牌ID，支持模糊匹配与卡牌效果查看 |
-| `script/deck_builder.py` | 生成/解码 30 张卡组代码，硬性校验收藏与合法性 |
+| `script/deck_builder.py` | 生成/解码 30 张卡组代码，硬性校验收藏与合法性；支持 sideboard 备牌（`--sideboard`）与忽略张数限制（`--ignore-count`） |
 | `script/carddata.py` | 共享数据模块：加载/重建 `cards_index.json`、读取 `standard_sets.json` |
 
 ## 文件结构
