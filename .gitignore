@@ -21,6 +21,7 @@ build/
 # IDE
 .vscode/
 .idea/
+.reasonix/
 
 # macOS
 .DS_Store
